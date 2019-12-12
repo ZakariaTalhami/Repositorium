@@ -4,7 +4,8 @@ RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y git
 
-COPY . ./
+COPY ./cloner ./
+COPY ./communication ./communication
 RUN pip install --no-cache-dir -r requirements.txt
 
 CMD ["python", "-u", "main.py"]

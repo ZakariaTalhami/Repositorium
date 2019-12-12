@@ -1,104 +1,134 @@
-import time
 import os
-import pika
+from logging import Logger
 import json
 from git import Repo
+from git.exc import GitCommandError
+from communication.rabbitmq import MessageQueue
+
+# construct logger
+import logging
+import logging.config
+import yaml
+
+with open('logConfig.yaml', 'r') as f:
+    config = yaml.safe_load(f.read())
+    logging.config.dictConfig(config)
+
+logger = logging.getLogger(__name__)
 
 
 REPO_BASE_LOCATION = os.getenv("REPO_BASE_LOCATION", './')
-QUEUE_NAME = "cloner_belt"
-MESSAGE_BROKER_HOST = "rabbitmq"
-MESSAGE_BROKER_USER = "user"
-MESSAGE_BROKER_PASS = "password"
+QUEUE_NAME = os.getenv("QUEUE_NAME")
+MESSAGE_BROKER_HOST = os.getenv("MESSAGE_BROKER_HOST")
+MESSAGE_BROKER_USER = os.getenv("MESSAGE_BROKER_USER")
+MESSAGE_BROKER_PASS = os.getenv("MESSAGE_BROKER_PASS")
 
 
-class MessageQueue:
-    def __init__(self, host, username, password):
-        self.credentials = pika.PlainCredentials(username, password)
-        self.connection_params = pika.ConnectionParameters(host, credentials=self.credentials)
-        self.connection, self.channel = self.make_connection()
+class RepoCloner:
 
-    def make_connection(self):
-        connection = None
-        channel = None
+    def __init__(self, queue_host, queue_username, queue_password, repo_base_location):
+        """
+        Parameters
+        ----------
+        queue_host : str
+            The message queue host
+        queue_username : str
+            The message queue admin username
+        queue_password : str
+            The message queue admin password
+        repo_base_location : str
+            The base location for cloning Repositories
+        """
+        self.__queue_host = queue_host
+        self.__queue_username = queue_username
+        self.__queue_password = queue_password
+        self.__repo_base_location = repo_base_location
+        self.__message_broker = MessageQueue(
+            host=self.__queue_host,
+            username=self.__queue_username,
+            password=self.__queue_password
+        )
+
+    def clone(self, remote_url, path):
+        """
+        Parameters
+        ----------
+        remote_url : str
+            The Remote repository URL to be cloned
+        path : str
+            The directory path to clone the repository
+        Returns
+        -------
+        git.Repo
+            Cloned repository instance
+        """
+        location = os.path.join(self.__repo_base_location, path)
+        logger.info("Cloning...")
         try:
-            connection = pika.BlockingConnection(self.connection_params)
-            channel = connection.channel()
-        except:
-            print("Failed to make connection")
-        return connection, channel
+            repo = Repo.clone_from(remote_url, location)
+        except GitCommandError as e:
+            logger.error(f"Failed to clone {remote_url}")
+            logger.error(e)
+            return None
+        logger.info("Clone Complete")
+        return repo
 
-    def reconnect(self):
-        if not self.connection or self.connection.is_closed:
-            self.connection, self.channel = self.make_connection()
+    def process_message(self, channel, method, properties, body):
+        """
+        Process the message from the queue, extract the Repository information and clone
 
-    def make_queue(self, name):
-        # can be done as a wrapper
-        if self.connection.is_closed:
-            self.reconnect()
-        self.channel.queue_declare(queue=name)
+        Parameters
+        ----------
+        channel
+        method
+        properties
+        body
+        """
+        try:
+            message = json.loads(body)
+            logger.info(message)
+            try:
+                url = message['url']
+                name = message['name']
+                self.clone(url, name)
+            except KeyError as e:
+                logger.error("Message must specify {}".format(e))
+        except json.JSONDecodeError:
+            logger.error("Unable to decode message")
+            logger.error(body)
 
-    def consume_queue(self, queue, callback):
-        if self.connection.is_closed:
-            self.reconnect()
-        self.make_queue(queue)
-        self.channel.basic_consume(queue, callback)
-        self.channel.start_consuming()
-# start_consuming
+    def consume_messages(self, queue_name):
+        """
+        Start consuming messages from the message queue for cloning
+
+        Message Body Example:
+        body = {
+            "url": "https://github.com/<username>/<repository-name>.git",
+            "name": "<repository-path>"
+        }
+
+        Parameters
+        ----------
+        queue_name : str
+            The name of the queue to receive messages from
+        """
+        self.__message_broker.consume_queue(
+            queue=queue_name,
+            callback=self.process_message
+        )
 
 
-def clone(url, path):
-    """
-    :param url: The url of the remote repo
-    :param path: The file path to clone into
-    :return:
-        Repo Object
-    """
-    location = os.path.join(REPO_BASE_LOCATION, path)
-    print("Cloning...")
-    repo = Repo.clone_from(url, location)
-    print("Clone Complete")
-    return repo
+logger.info("Bringing cloner up...")
 
-
-print("Bringing cloner up...")
-
-message_broker = MessageQueue(
-    host=MESSAGE_BROKER_HOST,
-    username=MESSAGE_BROKER_USER,
-    password=MESSAGE_BROKER_PASS
+# Initiate RepoCloner
+cloner = RepoCloner(
+    queue_host=MESSAGE_BROKER_HOST,
+    queue_username=MESSAGE_BROKER_USER,
+    queue_password=MESSAGE_BROKER_PASS,
+    repo_base_location=REPO_BASE_LOCATION
 )
 
-# Turn this into a class
-def cloner(channel, method, properties, body):
-    try:
-        message = json.loads(body)
-        print(message)
-        try:
-            url = message['url']
-            name = message['name']
-            print(url)
-            print(name)
-            clone(url, name)
-        except KeyError as e:
-            print("Message must specify {}".format(e))
-    except json.JSONDecodeError:
-        print(body)
-        print("Unable to decode message")
+# Start consuming message queue
+cloner.consume_messages(QUEUE_NAME)
 
-
-message_broker.consume_queue(
-    queue=QUEUE_NAME,
-    callback=cloner
-)
-
-
-# clone("https://github.com/ZakariaTalhami/PCBuild-django.git", "PCBuild-django")
-x = {
-"url": "https://github.com/ZakariaTalhami/PCBuild-django.git",
-"name": "PCBuild-django"
-}
-print("Cloner going down!")
-# while True:
-#     time.sleep(10)
-
+logger.info("Cloner going down!")

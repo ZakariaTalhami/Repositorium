@@ -6,6 +6,7 @@ RUN apt-get update && \
 
 COPY ./cloner ./
 COPY ./communication ./communication
+COPY ./models ./models
 RUN pip install --no-cache-dir -r requirements.txt
 
 CMD ["python", "-u", "main.py"]

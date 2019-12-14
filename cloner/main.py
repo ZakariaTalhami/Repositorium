@@ -1,9 +1,11 @@
 import os
-from logging import Logger
 import json
+import time
 from git import Repo
 from git.exc import GitCommandError
 from communication.rabbitmq import MessageQueue
+from communication.mongodb import MongoDBHandler
+from models.repository.repository import Repository
 
 # construct logger
 import logging
@@ -26,7 +28,7 @@ MESSAGE_BROKER_PASS = os.getenv("MESSAGE_BROKER_PASS")
 
 class RepoCloner:
 
-    def __init__(self, queue_host, queue_username, queue_password, repo_base_location):
+    def __init__(self, queue_host, queue_username, queue_password, repo_base_location, db_handler):
         """
         Parameters
         ----------
@@ -38,6 +40,8 @@ class RepoCloner:
             The message queue admin password
         repo_base_location : str
             The base location for cloning Repositories
+        db_handler : MongoDBHandler
+            The MongoDB handler
         """
         self.__queue_host = queue_host
         self.__queue_username = queue_username
@@ -48,6 +52,8 @@ class RepoCloner:
             username=self.__queue_username,
             password=self.__queue_password
         )
+        self.__db_handler = db_handler
+        self.__db_handler.connect()
 
     def clone(self, remote_url, path):
         """
@@ -65,13 +71,29 @@ class RepoCloner:
         location = os.path.join(self.__repo_base_location, path)
         logger.info("Cloning...")
         try:
+            start_time = time.time()
             repo = Repo.clone_from(remote_url, location)
+            duration = time.time() - start_time
+            self.create_repository_document(
+                remote_url=remote_url,
+                path=location,
+                duration=duration,
+                name=path
+            )
         except GitCommandError as e:
             logger.error(f"Failed to clone {remote_url}")
             logger.error(e)
             return None
         logger.info("Clone Complete")
         return repo
+    
+    def create_repository_document(self, remote_url, path, duration, name):
+        repo = Repository()
+        repo.clone_duration = duration
+        repo.remote_url = remote_url
+        repo.path = path
+        repo.name = name
+        repo.save()
 
     def process_message(self, channel, method, properties, body):
         """
@@ -120,15 +142,30 @@ class RepoCloner:
 
 logger.info("Bringing cloner up...")
 
+# Intiate MongoDBHandler
+mongo_handler = MongoDBHandler(
+    db_name=os.getenv("DB_NAME"),
+    username=os.getenv("DB_USER"),
+    password=os.getenv("DB_PASS"),
+    host=os.getenv("DB_HOST")
+)
+
 # Initiate RepoCloner
 cloner = RepoCloner(
     queue_host=MESSAGE_BROKER_HOST,
     queue_username=MESSAGE_BROKER_USER,
     queue_password=MESSAGE_BROKER_PASS,
-    repo_base_location=REPO_BASE_LOCATION
+    repo_base_location=REPO_BASE_LOCATION,
+    db_handler=mongo_handler
 )
 
 # Start consuming message queue
 cloner.consume_messages(QUEUE_NAME)
 
 logger.info("Cloner going down!")
+repo = Repository()
+repo.clone_duration = 2
+repo.remote_url = "remote_url"
+repo.path = "path"
+repo.name = "name"
+repo.save()

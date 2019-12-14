@@ -12,8 +12,14 @@ services:
       - MESSAGE_BROKER_HOST=rabbitmq
       - MESSAGE_BROKER_USER=user
       - MESSAGE_BROKER_PASS=password
+      - DB_HOST=mongo
+      - DB_USER=user
+      - DB_PASS=password
+      - DB_PORT=27017
+      - DB_NAME=repositorium
     depends_on:
       - rabbitmq
+      - mongo
     restart: on-failure
     volumes:
       - ./REPO:/REPO
@@ -33,6 +39,9 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: user
       MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: repositorium
+    volumes:
+      - ./models/mysetup.js:/docker-entrypoint-initdb.d/mysetup.js:ro
 
   mongo-express:
     image: mongo-express
@@ -40,5 +49,6 @@ services:
     ports:
       - 8081:8081
     environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
       ME_CONFIG_MONGODB_ADMINUSERNAME: user
       ME_CONFIG_MONGODB_ADMINPASSWORD: password
